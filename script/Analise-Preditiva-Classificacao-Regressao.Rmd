@@ -1,0 +1,1576 @@
+---
+title: "Análise Preditiva Avançada"
+author: "Adriano Abelaira Paz"
+date: "13/04/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Análise Preditiva Avançada
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, fig.width = 10, message = FALSE)
+```
+
+## Case
+
+  A multinacional  de varejo Waldata está querendo expandir a sua presença na américa latina e por isso decide firmar uma  parceria com a FGV para desenvolver um modelo preditivo do valor de vendas. Além disso a companhia decide apostar em um segundo modelo de ‘targetads’ tornando mais efetiva as campanhas de marketing. Assim a rede varejista pretende melhorar suas projeções de fluxo  de caixa e otimizar a distribuição de seus produtos por departamentos.
+
+  Para desenvolver seu modelo você irá realizar as seguintes tarefas:
+
+  1. Importar os datasets RETAIL e MARKETING para o ambiente R.
+  2. Fazer uma exploração detalhada dos dados. (Distribuições, valores faltantes etc..)
+  3. Dividir  as bases em 70% para treino e 30% para teste do modelo. (Utilize  sempre seed(314)).
+  4. Testar modelos de classificação para as campanhas de marketing:
+    1. Regressão Logística, Árvores de Decisão, SVM , Redes Neurais e Algoritmo Genético para featureselection.
+  5. Testar modelos de regressão para o valor de vendas das lojas:
+    1. Regressão Linear, Árvore de Decisão, e Redes Neurais.
+  6. Validar  a performance dos modelos (R2 & Matriz de Confusão).
+  7. Fazer o “scoring” dos modelos para os dados nas respectivas bases de teste.
+
+
+```{r include=FALSE}
+rm(list = ls())
+
+if (!require(data.table)) install.packages('data.table')
+require(data.table)
+
+if (!require(stringr)) install.packages('stringr')
+require(stringr)
+
+if (!require(lubridate)) install.packages('lubridate')
+require(lubridate)
+
+if (!require(mice)) install.packages('mice')
+require(mice)
+
+if (!require(ggplot2)) install.packages('ggplot2')
+require(ggplot2)
+
+if (!require(corrplot)) install.packages('corrplot')
+require(corrplot)
+
+if (!require(caret)) install.packages('caret')
+require(caret)
+
+if (!require(InformationValue)) install.packages('InformationValue')
+require(InformationValue)
+
+if (!require(MLmetrics)) install.packages('MLmetrics')
+require(MLmetrics)
+
+if (!require(DMwR2)) install.packages('DMwR2')
+require(DMwR2)
+
+if (!require(doParallel)) install.packages('doParallel')
+require(doParallel)
+
+if (!require(gridExtra)) install.packages('gridExtra')
+require(gridExtra)
+
+if (!require(car)) install.packages('car')
+require(car)
+
+if (!require(nortest)) install.packages('nortest')
+require(nortest)
+
+if (!require(lmtest)) install.packages('lmtest')
+require(lmtest)
+
+
+# Instalando o H2O -------------------------------------------------------------------
+# The following two commands remove any previously installed H2O packages for R.
+if (!require(h2o)) {
+  if ("package:h2o" %in% search()) { detach("package:h2o", unload=TRUE) }
+  if ("h2o" %in% rownames(installed.packages())) { remove.packages("h2o") }
+  
+  # Next, download packages that H2O depends on.
+  pkgs <- c("RCurl","jsonlite")
+  for (pkg in pkgs) {
+    if (! (pkg %in% rownames(installed.packages()))) { install.packages(pkg) }
+  }
+  
+  # Download and install the H2O package for R.
+  install.packages("h2o", type="source", repos=(c("http://h2o-release.s3.amazonaws.com/h2o/latest_stable_R")))
+}
+require(h2o)
+h2o.init()
+# -----------------------------------------------------------------------------------
+
+getwd()
+cores <- 8
+```
+
+
+### Importando, analisando e tratando o *Data Set* de Marketing.
+
+  Importando os dados de Marrketing e ajustando o *Data Set*.
+
+**Descrição dos dados:**
+
+Variável    | Descrição
+:-------------- | :------------------------------------------------
+AGE | Idade
+JOB | Profissão
+MARITAL_STATUS | Estado civil
+EDUCATION | Educação
+DEFAULT | Contas Atrasadas ?
+HOUSING | Hipoteca ?
+LOAN | Empréstimo Pessoal ?
+CONTACT | Tipo de Contato
+MONTH | Último Mês de Contato
+DAY_OF_WEEK | Último Dia da Semana de Contato
+DURATION | Duração do Último Contato em segundos
+CAMPAIGN | Tipo de Campanha de Marketing
+PDAYS | Número de Dias desde Último Contato (-1: Não Houve Contato)
+PREVIOUS | Número de Contatos Antes da Campanha
+POUTCOME | Resultado da Última Campanha
+EMP_VAR_RATE | Taxa de Desemprego da Região
+CONS_PRICE_IDX | IGPM
+CONS_CONF_IDX | Índice de Confiança do Consumidor
+SUBSCRIBED | Aderiu ao Serviço ?
+
+
+```{r}
+market <- fread(file = '../data//Marketing.csv')
+
+market[, ':='(JOB = as.factor(market$JOB),
+              MARITAL_STATUS = as.factor(market$MARITAL_STATUS),
+              EDUCATION = factor(market$EDUCATION,
+                                 ordered = FALSE, 
+                                 levels = c('unknown', 'illiterate', 
+                                            'basic_4y', 'basic_6y', 'basic_9y',
+                                            'high_school', 'professional_course',
+                                            'university_degree')),
+              DEFAULT = as.factor(market$DEFAULT),
+              HOUSING = as.factor(market$HOUSING),
+              LOAN = as.factor(market$LOAN),
+              CONTACT = as.factor(market$CONTACT),
+              MONTH = as.factor(market$MONTH),
+              DAY_OF_WEEK = as.factor(market$DAY_OF_WEEK),
+              POUTCOME = as.factor(market$POUTCOME),
+              EMP_VAR_RATE = as.numeric(str_replace_all(string = market$EMP_VAR_RATE, 
+                                                        pattern = '_', replacement = '.')),
+              CONS_PRICE_IDX = as.numeric(market$CONS_PRICE_IDX),
+              CONS_CONF_IDX = 
+                as.numeric(str_replace_all(string = market$CONS_CONF_IDX, 
+                                           pattern = '_', replacement = '.')),
+              SUBSCRIBED = as.factor(market$SUBSCRIBED))]
+str(market)
+```
+
+  Verificando a existência de NA's no *Data Set* de Marketing **(Market)**.
+
+```{r}
+# ----- Para o Dataset MARKET -----
+na_market <- md.pattern(market, rotate.names = TRUE)
+```
+
+  O *Data Set* possui NA's somente na variável **CONS_PRICE_IDX**.
+
+```{r}
+na_market_ord <- setnames(as.data.table(na_market),
+                          'V20',
+                          'Qtd.NA')[,Qtd.Linhas:=rownames(na_market)][,.SD,keyby=Qtd.NA]
+na_market_ord[3,
+              c('AGE','JOB','MARITAL_STATUS','EDUCATION','DEFAULT','HOUSING','LOAN',
+                'CONTACT','MONTH','DAY_OF_WEEK','DURATION','CAMPAIGN','PDAYS',
+                'PREVIOUS','POUTCOME','EMP_VAR_RATE',
+                'CONS_PRICE_IDX','CONS_CONF_IDX','SUBSCRIBED')] / nrow(market) * 100.0
+```
+
+  Cerca de 8% das linhas estão com NA's na coluna **CONS_PRICE_IDX**.
+  
+  Como percentualmente os valores de NA's são poucos em relação ao total de linhas, optou-se por retirá-los.
+
+```{r}
+# Primeiro dataset para Market
+market2 <- na.omit(market, cols = 'CONS_PRICE_IDX')
+```
+
+   Com a eliminação de algumas linhas, gerou um *Data Set* de Marketing sem NA's.
+
+```{r}
+md.pattern(market2, rotate.names = TRUE)
+```
+
+  Verificando a correlação no *Data Set* tratado de Marketing.
+    
+```{r fig.width=8}
+corrplot(cor(market2[,-c('JOB','MARITAL_STATUS','EDUCATION','DEFAULT',
+                         'HOUSING','LOAN','CONTACT',
+                         'MONTH','DAY_OF_WEEK','POUTCOME','SUBSCRIBED')]),
+         method = 'square',
+         type = 'lower',
+         diag = FALSE,
+         title = 'Correlação',
+         mar = c(1,1,1,1),
+         addCoefasPercent = TRUE,
+         addCoef.col = 'gray50',
+         number.digits = 0)
+```
+  
+   O *Data Set* possui uma alta correlação positiva (>70%) entre **EMP_VAR_RATE** e **CONS_PRICE_IDX**, cerca de 78%.
+   Possui uma correlação mediana positva (entre 50% e 70%) entre **PDAYS** e **PREVIOUS**, cerca de 52%.
+   Possui uma baixa correlação positiva (entre 15% e 50%) entre **EMP_VAR_RATE** e **CONS_CONF_IDX**, cerca de 19% e **CAMPNIGN** e **EMP_VAR_RATE**, cerca de 15%.
+   Não possui variáveis com alta (>70%) correlação negativa ou mediana (entre 50% e 70%).
+   Possui baixa correlação negativa (entre 15% e 50%) entre **PREVIOUS** e **EMP_VAR_RATE**, cerca de 43%, **PDAYS** e **EMP_VAR_RATE**, cerca de 23% e entre **PREVIOUS** e **CONS_PRICE_IDX**, cerca de 21%.
+   
+   Dado as correlações envolvendo **CONS_PRICE_IDX**:
+      1. **CONS_PRICE_IDX** (Índice de preço) e **EMP_VAR_RATE** (Taxa de desemprego) (78%);  
+      2. **CONS_PRICE_IDX** e **PREVIOUS** (Número de Contatos Antes da Campanha) (-21%);  
+      3. **CONS_PRICE_IDX** e **CAMPAIGN** (Tipo de Campanha de Marketing) (12%).  
+  Como **PREVIOUS** e **CAMPAIGN** possuem baixa correlação com **CONS_PRICE_IDX** e não possuem uma relação aparente com a variável **CONS_PRICE_IDX**, serão desconsideradas. Faremos uma análise somente com a variável **EMP_VAR_RATE**, pois **CONS_PRICE_IDX** (IGPM/Inflação) e **EMP_VAR_RATE** (Taxa de Desemprego) são medidas que se relacionam.
+  
+```{r}
+market2[,c('CONS_PRICE_IDX','EMP_VAR_RATE')] %>% 
+  ggplot(aes(y = CONS_PRICE_IDX, x = EMP_VAR_RATE)) +
+  geom_point() +
+  scale_y_continuous(limits = c(92,95), 
+                     breaks = c(92,92.5,93,93.5,94,94.5,95)) +
+  scale_x_continuous(limits = c(-3.5,2), 
+                     breaks = c(-3.5,-3,-2.5,-2,-1.5,-1,-0.5,0,0.5,1,1.5,2))
+```
+  
+  Não se percebe qualquer relação linear entre as duas variáveis. Inclusive, para o mesmo valor de **EMP_VAR_RATE** encontramos diferentes valores para **CONS_PRICE_IDX**. Talvez para valores médios de **CONS_PRICE_IDX** tenhamos uma relação linear com a média de **EMP_VAR_RATE**. Portanto, foi desconsiderada a possibilidade de imputação de **CONS_PRICE_IDX** a partir de **EMP_VAR_RATE**.
+ 
+ Considerando que **CONS_PRICE_IDX** seja uma variável que capta flutuações da inflação, logo torna-se dependente do tempo em que foi apurada.
+ Faremos uma análise de **CONS_PRICE_IDX**, **MONTH** e **DAY_OF_WEEK**, pois foi considerado que o valor de **CONS_PRICE_IDX** foi obtido no mês e dia da semana de contato com o consumidor.
+ 
+```{r}
+market[is.na(CONS_PRICE_IDX),c('CONS_PRICE_IDX','MONTH','DAY_OF_WEEK')] %>% 
+  ggplot(aes(x = DAY_OF_WEEK, y = as.factor(CONS_PRICE_IDX))) +
+  geom_jitter(aes(color = MONTH)) +
+  labs(y = 'CONS_PRICE_IDX')
+```
+  
+  Percebe-se que os valores da variável **CONS_PRICE_IDX** preenchidos com NA's, estão todos no mês de NOVEMBRO, sendo distribuídos de forma igualitária entre SEGUNDA, TERÇA, QUARTA, QUINTA e SEXTA.
+  
+  Fazendo uma análise no *Data Set* direcionado para as variáveis **MONTH** igual a NOVEMBRO, teremos:
+  
+```{r}
+market[MONTH == 'nov',c('CONS_PRICE_IDX','MONTH')] %>% 
+  ggplot(aes(y = MONTH, x = as.factor(CONS_PRICE_IDX))) +
+  geom_jitter() +
+  labs(x = 'CONS_PRICE_IDX')
+```
+  
+  Mostrando que para o mês de NOVEMBRO temos dois valores conhecidos para a variável **CONS_PRICE_IDX**: 92,649 e 94,767. Considerando que **CONS_PRICE_IDX** seja uma representação de medida de inflação mensal, que não varia de acordo com os dias da semana dentro do mesmo mês. Os dois valores constatados no mês de NOVEMBRO nos leva a concluir que eles representam anos diferentes para a variável **CONS_PRICE_IDX**. Como não temos a informação de ano no *Data Set*, não temos como imputar valor em **CONS_PRICE_IDX** através da variável **MONTH**, pois nos falta informação do ano.
+  
+```{r}
+market_mes <- data.table()
+market_mes[, ':='(ID = c(3,4,5,6,7,8,9,10,11,12),
+                  MES = factor(c('mar','apr','may','jun','jul',
+                                 'aug','sep','oct','nov','dec')),
+                  QTD = c(nrow(market[MONTH == 'mar',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'apr',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'may',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'jun',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'jul',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'aug',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'sep',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'oct',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'nov',c('CONS_PRICE_IDX','MONTH')]),
+                          nrow(market[MONTH == 'dec',c('CONS_PRICE_IDX','MONTH')])))]
+as.data.frame(market_mes) %>% ggplot(aes(x = as.factor(ID), y = QTD)) +
+  geom_point(colour = 'red', shape = -9, size = 3) +
+  geom_segment(aes(x = as.factor(market_mes$ID), 
+                   xend = as.factor(market_mes$ID), y = 0, yend = QTD),
+               colour = 'blue', size = 5, alpha = 0.6) +
+  geom_segment(aes(x = '11', xend = '11', y = 0, 
+                   yend = nrow(market[is.na(CONS_PRICE_IDX) & 
+                                        MONTH == 'nov',c('CONS_PRICE_IDX','MONTH')])),
+               colour = 'red', size = 5, alpha = 0.05) +
+  scale_x_discrete(labels = market_mes$MES) +
+  scale_y_continuous(breaks = c(0,1000,2000,3000,4000,5000,6000,7000,8000,9000,
+                                10000,11000,12000,13000,14000),
+                     labels = c('0','1.000','2.000','3.000','4.000','5.000','6.000','7.000','8.000','9.000','10.000',
+                                '11.000','12.000','13.000','14.000')) +
+  annotate("text", 
+           label = paste(round(nrow(market[is.na(CONS_PRICE_IDX) & 
+                                             MONTH == 'nov',c('CONS_PRICE_IDX','MONTH')]) /
+                                 nrow(market[MONTH == 'nov',
+                                             c('CONS_PRICE_IDX','MONTH')]) * 100, 2), "%"), 
+           x = 9.3, y = 3500, size = 3, colour = "black", fontface = 'bold') +
+  labs(x = 'MONTH', y = 'Total de Observações')
+```
+  
+  Uma solução a adotar nesses casos seria a retirada de toda a variável **CONS_PRICE_IDX** ao invés de retirar as linhas que possuem NA's nessa variável. Essa solução possivelmente produzirá menos viés, dado que os valores de NA's, que estão localizados todos no mês de NOVEMBRO, representam *88,17%* do conjunto desse mês.
+  
+```{r}
+# Segundo dataset para Market
+market3 <- copy(market)
+market3[,CONS_PRICE_IDX:=NULL]
+```
+
+  Dividindo os dois *Data Set* de Marketing tratados em *Data Set* para treinamento e teste.
+  O primeiro *Data Set* obtido retirando as linhas em que a coluna **CONS_PRICE_IDX** apresentava valor ausente, ficou divido em *Data Set* **market2_train** para treinamento e **market2_test** para teste.
+  O segundo *Data Set* obtido toda a coluna **CONS_PRICE_IDX**, ficou divido em *Data Set* **market3_train** para treinamento e **market3_test* para teste.
+  
+```{r}
+set.seed(314)
+i_market <- createDataPartition(market2$SUBSCRIBED, p = 0.7, list = FALSE)
+market2_train <- market2[i_market,]
+market2_test <- market2[-i_market,]
+
+set.seed(314)
+i_market <- createDataPartition(market3$SUBSCRIBED, p = 0.7, list = FALSE)
+market3_train <- market3[i_market,]
+market3_test <- market3[-i_market,]
+```
+
+  Com o objetivo de avaliar qual o melhor *Data Set* de Marketing para ser utilizado, foi utilizado uma modelagem por *Regressão Logística*, que é um modelo robusto e com boa performance para *Data Sets* grandes como esse.
+  
+  A métrica que a análise se balizará será o AUC, que quantifica a Área sob a Curva ROC, e o LogLoss, que quantifica a Acuracidade de um classificador penalizando classificações falsas. Para o AUC, quanto maior melhor, já o LogLoss, quanto menor melhor. 
+
+```{r}
+cv <- trainControl(method = "repeatedcv", number = 10, 
+                   repeats = 5, savePredictions = TRUE,
+                   summaryFunction = twoClassSummary, classProbs = TRUE)
+
+# -------------------------------------------------------------------
+# Usando o Dataset Market2 (sem as linhas com NA's de CONS_PRICE_IDX)
+# ----- Regressão Logística -----
+mod_market2_rl <- train(SUBSCRIBED ~ .,
+                        data = market2_train, 
+                        method = "glm", 
+                        metric = "ROC", 
+                        trControl = cv)
+pred_market2_rl <- predict(mod_market2_rl, newdata = market2_test, type = 'prob')
+
+# Performance sem as linhas com NAs da variável CONS_PRICE_IDX
+print(paste('AUC:',
+            AUC(pred_market2_rl$yes, as.integer(market2_test$SUBSCRIBED)-1)))
+print(paste('LogLos:',
+            LogLoss(pred_market2_rl$yes, as.integer(market2_test$SUBSCRIBED)-1)))
+
+cutoff <- optimalCutoff(actuals = as.integer(market2_test$SUBSCRIBED)-1, 
+                        predictedScores = pred_market2_rl$yes)
+pred_market2 <- ifelse(pred_market2_rl$yes > cutoff, 'yes', 'no')
+pred_market2 <- as.factor(pred_market2)
+(mc_market2_rl <- caret::confusionMatrix(data = pred_market2, positive = 'yes', 
+                                         reference = market2_test$SUBSCRIBED,
+                                         mode = 'everything'))
+
+```
+
+
+  
+```{r}
+# -------------------------------------------------------------------
+# Usando o Dataset Market3 (sem a variável CONS_PRICE_IDX)
+# ----- Regressão Logística -----
+mod_market3_rl <- train(SUBSCRIBED ~ .,
+                        data = market3_train, 
+                        method = "glm", 
+                        metric = "ROC", 
+                        trControl = cv)
+pred_market3_rl <- predict(mod_market3_rl, newdata = market3_test, type = 'prob')
+
+# Performance sem a variável CONS_PRICE_IDX
+print(paste('AUC:',
+            AUC(pred_market3_rl$yes, as.integer(market3_test$SUBSCRIBED)-1)))
+print(paste('LogLos:',
+            LogLoss(pred_market3_rl$yes, as.integer(market3_test$SUBSCRIBED)-1)))
+
+cutoff <- optimalCutoff(actuals = as.integer(market3_test$SUBSCRIBED)-1, 
+                        predictedScores = pred_market3_rl$yes)
+pred_market3 <- ifelse(pred_market3_rl$yes > cutoff, 'yes', 'no')
+pred_market3 <- as.factor(pred_market3)
+(mc_market3_rl <- caret::confusionMatrix(data = pred_market3, positive = 'yes', 
+                                         reference = market3_test$SUBSCRIBED,
+                                         mode = 'everything'))
+```
+  
+  A retirada das linhas com **CONS_PRICE_IDX** com NA's se mostrou mais eficaz que a retirada de toda a variável. O *AUC* da regressão com o primeiro Dataset **(Market2)** foi de *93,68%* e o *LogLoss* foi de *0.2126905*, otimizando o *Cutoff* foi possível obter um *F1 Score* de *58,71%*. 
+  Com o segundo *Data Set* **(Market3)** que foi criado retirando toda a variável **CONS_PRICE_IDX**, o *AUC* foi de *92,82%*, um pouco inferior, e um *LogLoss* de *0,217033*, superior ao modelo anterior. Otimizando o *Cutoff* foi possível obter *F1 Score* de *50,64%*.
+
+  Nota-se um *AUC* ligeiramente maior do primeiro modelo e um *LogLoss* menor, evidenciando a capacidade de distinguir clientes que irão converter dos que não irão maior em relação ao segundo modelo. Outro ponto mostrado foi a métrica *F1 Score*, que no primeiro modelo ficou sensivelmente melhor que no segundo modelo. Como essa métrica é uma junção da *Sensibilidade (Recall)* e *Precisão*, ela mostra a capacidade de distinguir clientes que irão converter, minimizando tanto os falsos positivo quanto os falsos negativos. Essa evidência do *F1 Score* se soma ao do *AUC* e *LogLos* que apontam que o melhor *Data Set* para Marketing é o utilizado no primeiro modelo, que é o *Data Set* **(Market2)**.
+  
+```{r}
+# Setando o melhor Dataset para Market
+dt_market_train <- market2_train
+dt_market_test <- market2_test
+```
+
+
+### Importando, analisando e tratando o *Data Set* de Faturamento das Lojas.
+
+  Importando os dados de Faturamento das Lojas e ajustando o *Data Set*.
+  
+**Descrição dos dados:**
+
+Variável    | Descrição
+:-------------- | :------------------------------------------------
+STORE | ID da Loja
+DATE | Datetime
+TEMPERATURE | Temperatura em Fahrenheit
+FUEL_PRICE | Preço Galão Combustível em USD
+MARKDOWN1 | Redução de Preço
+MARKDOWN2 | Redução de Preço
+MARKDOWN3 | Redução de Preço
+MARKDOWN4 | Redução de Preço
+MARKDOWN5 | Redução de Preço
+CPI | Consumer Price Index - Inflação
+UNEMPLOYMENT | Taxa de Desemprego
+ISHOLIDAY | Feriado ?
+WEEKLY_SALES | Valor Total de Vendas na Semanda em USD
+
+
+```{r}
+# Importando os dados
+retail <- fread(file = '../data/Retail.csv')
+
+# Tratando os data sets
+retail[,':='(IsHoliday = as.factor(retail$IsHoliday),
+             Weekly_Sales = as.double(retail$Weekly_Sales),
+             Date = dmy(retail$Date))]
+str(retail)
+```
+
+
+  Verificando a existência de NA's nas variáveis do *Data Set* de Faturamento das Lojas **(Retail)**.
+
+```{r fig.width=12, fig.height=8}
+# ----- Para o Dataset RETAIL ------
+na_retail <- md.pattern(retail, rotate.names = TRUE)
+```
+
+  O *Data Set* possui NA's nas colunas **CPI**, **Unemployment**, **Weekly_Sales**, **MarkDown1**, **MarkDown2**, **MarkDown3**, **MarkDown4**, **MarkDown5**.
+
+```{r}
+na_retail_ord <- 
+  setnames(as.data.table(na_retail),
+           'V14','Qtd.NA')[,Qtd.Linhas:=rownames(na_retail)][,.SD,keyby=Qtd.NA]
+na_retail_ord[31,
+              c('Store','Date','Temperature','Fuel_Price','IsHoliday','CPI',
+                'Unemployment','Weekly_Sales',
+                'MarkDown1','MarkDown2','MarkDown3',
+                'MarkDown4','MarkDown5')] / nrow(retail) * 100.0
+```
+
+  Cerca de 50% das linhas estão sem do *MarkDown1* até *MarkDown5*. Não dá para descartá-los.
+  Cerca de 7% não possuem *CPI* (Inflação) e *Unemployment* (Taxa de Desemprego).
+  Cerca de 21% não possui *Weekly_Sales* (Valor Total das Vendas na Semana).
+
+  Para as variáveis *CPI* e *Unemployment* preencheremos com o último valor disponível na linha anterior do *Data Set* ordenado por loja e data. Assim o último valor disponível da loja será a melhor estimativa para os valores faltantes na datas seguintes da mesma loja.
+
+```{r}
+retail2 <- copy(retail)
+
+setorder(retail2, Store, Date)
+
+# Preenchendo os NA's das colunas MarkDown's1-5 (Redução de Preço) com zero
+setnafill(retail2, type = c('const'), fill = 0, 
+          cols = c('MarkDown1','MarkDown2','MarkDown3','MarkDown4','MarkDown5'))
+
+setnafill(retail2, type = c('locf'), cols = c('CPI', 'Unemployment'))
+
+retail2 <- na.omit(retail, cols = 'Weekly_Sales')
+
+na_mark <- is.na(retail2$MarkDown1)
+retail2[which(na_mark), MarkDown1 := 0]
+na_mark <- is.na(retail2$MarkDown2)
+retail2[which(na_mark), MarkDown2 := 0]
+na_mark <- is.na(retail2$MarkDown3)
+retail2[which(na_mark), MarkDown3 := 0]
+na_mark <- is.na(retail2$MarkDown4)
+retail2[which(na_mark), MarkDown4 := 0]
+na_mark <- is.na(retail2$MarkDown5)
+retail2[which(na_mark), MarkDown5 := 0]
+```
+
+  Para as variáveis *MarkDown1* até *MarkDown5*, optou-se por preenchê-las com zero, pois são variáveis que mostram a redução de preço nas lojas e a melhor alternativa, levando-se em consideração a relação de custo e benefício, seria considerá-las como zero, ou seja, sem redução de preço.
+
+  Para a variável *Weekly_Sales*, como é a variável *target* para o modelo de previsão de faturamento, qualquer método de imputação pode criar um viés no modelo. Portanto, a melhor alternativa nessa caso será o descarte das linhas com NA's. Como isso perderemos 21% do *Data Set* de faturamento.
+
+  Com a imputação dos NA's e a eliminação de algumas linhas, gerou um *Data Set* de Faturamento das Lojas sem NA's.
+
+```{r}
+md.pattern(retail2, rotate.names = TRUE)
+```
+
+
+  Verificando a correlação no *Data Set* tratado de Faturamento das Lojas.
+
+```{r fig.height=8}
+corrplot(cor(retail2[,-c('Date','IsHoliday')]),
+         method = 'square',
+         type = 'lower',
+         diag = FALSE,
+         title = 'Correlação',
+         mar = c(1,1,1,1),
+         addCoefasPercent = TRUE,
+         addCoef.col = 'gray50',
+         number.digits = 0)
+```
+
+  O *Data Set* possui uma alta correlação positiva (> 70%) entre **MarkDow1** e **MarkDown4**, cerca de 83%.
+  Não possui variáveis com uma correlação positiva mediana (entre 50% e 70%).
+  Possui as seguintes variáveis com uma baixa correlação positiva (entre 15% e 50%):
+    . **Fuel_Price** e **MarkDown1**, cerca de 26%;
+    . **Unemployment** e **Store**, cerca de 22%;
+    . **MarkDown1** e **Weekly_Sales**, cerca de 20%;
+    . **MarkDown1** e **MarkDown5**, cerca de 18%; 
+    . **Temperature** e **CPI**, cerca de 16%; 
+    . **MarkDown1** e **MarkDown2**, cerca de 16%; 
+    . **Fuel_Price** e **MarkDown4**, cerca de 15%; 
+    . **MarkDown4** e **Weekly_Sales**, cerca de 15%.
+  Não possui nenhum par de variáveis com alta (>70%) correlação negativa e nem mediana (entre 50% e 70%).
+  Possui as seguintes variáveis com baixa correlação negativa (entre 15% e 50%):
+    . **Store** e **Weekly_Sales**, cerca de 33%; 
+    . **CPI** e **Unemployment**, cerca de 30%; 
+    . **Temperature** e **MorkDown2**, cerca de 22%;
+    . **CPI** e **Store**, cerca de 21%;
+    . **CPI** e **Fuel_Price**, cerca de 19%.
+  
+  A alta correlação positiva entre **MarkDown1** e **MarkDown4** pode ter sido influenciada pelo método de imputação de NA's nessas variáveis. Como também ele não faz muito sentido, uma correlação entre redução de preços, não foi dado muita atenção.
+  
+  Como a variável *target* é **Weekly_Sales**, a correlações entre ela e as demais são de interesse nessa análise preliminar. Temos uma correlação média com **markDown1** e **MarkDown4** e uma correlação baixa com **Store**.
+
+  Avaliando mais detalhadamente o método de imputação para as variáveis **CPI** e **Unemployment**, percebe-se que houve um acréscimo grande nos grupos em que os dados estavam originalmente.
+
+```{r}
+ggplot(data = na.omit(retail), aes(y = Weekly_Sales)) +
+  geom_point(aes(x = CPI), color = 'black', alpha = 0.2) +
+  geom_point(aes(x = Unemployment), color = 'red', alpha = 0.2) +
+  labs(x = 'CPI=PRETO,   Unemployment=VERMELHO')
+
+ggplot(data = retail2, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = CPI), color = 'black', alpha = 0.2) +
+  geom_point(aes(x = Unemployment), color = 'red', alpha = 0.2) +
+  labs(x = 'CPI=PRETO,   Unemployment=VERMELHO')
+```
+
+  O gráfico a seguir mostra a dependência das variáveis **MarkDown1**, **MarkDown3**, **MarkDown4** e **MarkDown5**, com a variável **Weekly_Sales**, evidenciando o impacto que ocorreu com a imputação dos valores ausentes com valorez zerados. A concentração dos valores zerados podem estar distorcendo demasiadamento a relação com a variável *target* **Weekley_Sales**.
+  
+```{r}
+g1 <- ggplot(data = retail2, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown1), color = 'black', alpha = 0.4) +
+  scale_x_log10()
+g2 <- ggplot(data = retail2, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown3), color = 'green', alpha = 0.4) +
+  scale_x_log10()
+g3 <- ggplot(data = retail2, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown4), color = 'blue', alpha = 0.4) +
+  scale_x_log10()
+g4 <- ggplot(data = retail2, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown5), color = 'red', alpha = 0.4) +
+  scale_x_log10()
+grid.arrange(g1 , g2 ,
+             g3 , g4 ,
+             ncol=2, nrow=2)
+```
+  
+  Para tentar corrigir essas distorções entre as variáveis **MarkDown1** até **MarkDown5**, **CPI** e **Unemployment**, optou-se por um tratamento de imputação de valores ausentes através do KNN-5.
+  
+```{r}
+retail3 <- na.omit(retail, cols = 'Weekly_Sales')
+
+target <- retail3$Weekly_Sales
+
+# Ajustando o processamento paralelo em CORES (NÚCLEOS)
+cl <- makePSOCKcluster(cores)
+registerDoParallel(cl)
+
+retail3 <- knnImputation(retail3[,!names(retail3) %in% "Weekly_Sales", with=F], 
+                         k = 5, 
+                         meth = 'weighAvg')
+
+# Parando o processamento paralelo
+stopCluster(cl)
+
+retail3[,Weekly_Sales := target]
+
+# Verificação de existência de NA no Data Set
+md.pattern(retail3, rotate.names = TRUE)
+```
+  
+  A imputação pelo KNN-5 dos valores ausentes foi bem sucedida.
+  
+  Verificando a correlação resultante no *Data Set* tratado.
+
+```{r fig.height=8}
+corrplot(cor(retail3[,-c('Date','IsHoliday')]),
+         method = 'square',
+         type = 'lower',
+         diag = FALSE,
+         title = 'Correlação',
+         mar = c(1,1,1,1),
+         addCoefasPercent = TRUE,
+         addCoef.col = 'gray50',
+         number.digits = 0)
+```
+
+  Percebe-se que houve uma mudança razoável entre as correlações das variáveis **MarkDown1** até **MarkDown5** com a variável *target* **Weekly_Sales**.
+  
+  Avaliando mais detalhadamente as variáveis **CPI** e **Unemployment**, percebe-se que não houve mudança significativa entre a imputação pelo método LOF (Last Observation Carried Forward), que preenche o NA com o último valor disponível e o método KNN-5.
+  
+```{r}
+# Para as variáveis CPI e Unemployment
+g1 <- ggplot(data = retail2, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = CPI), color = 'black', alpha = 0.2) +
+  geom_point(aes(x = Unemployment), color = 'red', alpha = 0.2) +
+  labs(x = 'CPI:preto, Unemployment:vermelho', title = 'Imputação LOF')
+g2 <- ggplot(data = retail3, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = CPI), color = 'black', alpha = 0.2) +
+  geom_point(aes(x = Unemployment), color = 'red', alpha = 0.2) +
+  labs(x = 'CPI:preto, Unemployment:vermelho', title = 'Imputação KNN-5')
+grid.arrange(g1 , g2 ,
+             ncol=1, nrow=2)
+```
+  
+  Para as variáveis **MarkDown1**, **MarkDown3**, **MarkDown4** e **MarkDown5**, percebe-se que o viés produzido pela imputação dos NA's com valores zerados desapareceu. Isso ficou evidenciado pelo gráfico das corrrelações que mostra uma diminuição entre a correlação dessas variáveis com a variável *target* **Weekly_Sales**.
+  
+```{r}
+# Para as variáveis MarkDowns1-5
+g1 <- ggplot(data = retail3, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown1), color = 'black', alpha = 0.4) +
+  scale_x_log10()
+g2 <- ggplot(data = retail3, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown3), color = 'green', alpha = 0.4) +
+  scale_x_log10()
+g3 <- ggplot(data = retail3, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown4), color = 'blue', alpha = 0.4) +
+  scale_x_log10()
+g4 <- ggplot(data = retail3, aes(y = Weekly_Sales)) +
+  geom_point(aes(x = MarkDown5), color = 'red', alpha = 0.4) +
+  scale_x_log10()
+grid.arrange(g1 , g2 ,
+             g3 , g4 ,
+             ncol=2, nrow=2)
+```
+
+  Dividindo os dois *Data Set* de Faturamento das Lojas tratados em *Data Set* para treinamento e teste.
+  O primeiro *Data Set* obtido com preenchimento de valores zerados para **MarkDowns1-5** e LOF para **CPI** e **Unemployment**, ficou divido em *Data Set* **retail2_train** para treinamento e **retail2_test** para teste.
+  O segundo *Data Set* obtido com preenchimento para **MarkDowns1-5**, **CPI** e **Unemployment** com KNN-5, ficou divido em *Data Set* **retail3_train** para treinamento e **retail3_test** para teste.
+  
+```{r}
+set.seed(314)
+i_retail <- createDataPartition(retail2$Weekly_Sales, p = 0.7, list = FALSE)
+retail2_train <- retail2[i_retail,]
+retail2_test <- retail2[-i_retail,]
+
+set.seed(314)
+i_retail <- createDataPartition(retail3$Weekly_Sales, p = 0.7, list = FALSE)
+retail3_train <- retail3[i_retail,]
+retail3_test <- retail3[-i_retail,]
+```
+
+  Com o objetivo de avaliar qual o melhor *Data Set* do Faturamento da Loja que deverá ser utilizado, foi implementado uma modelagem por *Regressão Linear*, que é um modelo com boa performance para *Data Sets* grandes como esse, apesar do gráfico de correlações apontar uma baixa relação entre as variáveis independente e a variável dependente **Weeekly_Sales**.
+  
+  A métrica que a análise se balizará será o *R2* e o *RMSE*. 
+
+```{r}
+# ---------------------------------------------------------------------------------
+# Usando o Dataset Retail2 
+# (com preenchimento de valores zerados para MarkDowns1-5 e LOF para CPI e Unemployment)
+# ----- Regressão Linear -----
+# Treinando o modelo
+set.seed(314)
+
+mod_retail2_rl <- lm(Weekly_Sales ~ ., 
+                     data = retail2_train[,-c('IsHoliday','Temperature','MarkDown4')])
+summary(mod_retail2_rl)
+
+pred_retail2_rl <- predict(mod_retail2_rl, newdata = retail2_test)
+
+# Performance com valores zerados para MarkDowns1-5 e LOF para CPI e Unemployment:
+print(paste('R2:',
+            R2_Score(y_pred = pred_retail2_rl, y_true = retail2_test$Weekly_Sales)))
+print(paste('RMSE:',
+            RMSE(y_pred = pred_retail2_rl, y_true = retail2_test$Weekly_Sales)))
+```
+
+
+```{r}
+# ----------------------------------------------------------------------
+# Usando o Dataset Retail3 
+# (com preenchimento para MarkDowns1-5, CPI e Unemployment) com KNN-5)
+# ----- Regressão Linear -----
+set.seed(314)
+
+mod_retail3_rl <- lm(Weekly_Sales ~ ., 
+                     data = retail3_train[,-c('Fuel_Price','Temperature','MarkDown4')])
+summary(mod_retail3_rl)
+
+pred_retail3_rl <- predict(mod_retail3_rl, newdata = retail3_test)
+
+# Performance com KNN-5 para MarkDowns1-5 e para CPI e Unemployment:
+print(paste('R2:',
+            R2_Score(y_pred = pred_retail3_rl, y_true = retail3_test$Weekly_Sales)))
+print(paste('RMSE:',
+           RMSE(y_pred = pred_retail3_rl, y_true = retail3_test$Weekly_Sales)))
+```
+
+  O uso do KNN-5 para imputação dos NA's do *Data Set* **Retail** se mostrou melhor que q imputação de zeros nas variáveis variáveis **MarkDown1** até **MarkDown5** e preenchimento com o último valor conhecido para as variáveis **CPI** e **Unemployment**. Apesar do *R2* ter sido muito baixo pelo dois métodos, ele ficou melhor pelo segundo método. Essa evidência do *R2*, somada ao *RMSE* apontam que o melhor *Data Set* para o Faturamento das Lojas **(Retail)** é o utilzado pelo segundo modelo, que é o *Data Set* **(Retail3)**.
+
+```{r}
+# Setando o melhor Dataset para Market
+dt_retail_train <- retail3_train
+dt_retail_test <- retail3_test
+```
+
+
+
+### Modelagem para o *Data Set* de Marketing.
+
+  Configurando os *Data Sets* de Marketing para uso com o pacote **H2O**.
+  
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Definindo a variável target
+y <- "SUBSCRIBED"
+x <- setdiff(names(dt_market_train), y)
+h2o_market_train <- as.h2o(dt_market_train)
+h2o_market_test <- as.h2o(dt_market_test)
+```
+  
+  
+#### Regressão Logística
+  
+  O primeiro modelo que será treinado é o de *Regressão Logística*, utilizando o pacote **H2O**.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# ----- Regressão Logística
+# Treinando o modelo
+mod_market_rl <- h2o.glm(x = x, 
+                         y = y,
+                         training_frame = h2o_market_train,
+                         nfolds = 10,
+                         fold_assignment = 'Random',
+                         family = "binomial",
+                         max_iterations = 100,
+                         seed = 314)
+h2o.varimp_plot(mod_market_rl)
+```
+
+ As três variáveis mais importantes do modelo, em ordem de importância, são a **EMP_VAR_RATE** (Taxa de Desemprego da Região), **MONTH.mar**, variável binária para a variável **MONTH** (Último Mês de Contato) para o mês de MARÇO, e **DURATION** (Duração do Último Contato em segundos).
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+pred_market_rl <- h2o.predict(mod_market_rl, newdata = h2o_market_test)
+cutoff <- optimalCutoff(actuals = as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1, 
+                        predictedScores = (as.data.frame(pred_market_rl))$yes)
+
+print(paste('AUC:',
+      AUC((as.data.frame(pred_market_rl))$yes,
+          as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss((as.data.frame(pred_market_rl))$yes,
+                    as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_rl$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rl <- caret::confusionMatrix(data = (as.data.frame(pred_market))$C1, 
+                                        positive = 'yes', 
+                                        reference = (as.data.frame(h2o_market_test))$SUBSCRIBED,
+                                        mode = 'everything'))
+```
+
+  Avaliando a performance do modelo, ele obteve um *AUC* de *93,71%* e um *LogLoss* de *0,2123981*. Otimizando a linha de corte, foi obtido *Acurácia* de *90,85%*, uma *Sensibilidade* de *58,88%*, uma *Especificidade* de *95,15%* e uma *Precisão* de *61,99%*.
+  Como métrica balizadora de performance, foi escolhido o *F1 Score* pois é uma junção da *Sensibilidade (Recall)* e *Precisão*, mostrando a capacidade de distinguir clientes que irão converter, minimizando tanto os falsos positivo quanto os falsos negativos.O valor do *F1 Score* para esse modelo foi de *60,39%*.
+
+  Com o objetivo de aprimorar o modelo de *Regressão Logística* e torná-lo mais parcimonioso, foi aplicado os métodos de *feature selection*: *Step Wise* e *Genetic Algorithm (GA)*.
+  
+```{r eval=FALSE}
+# ----- Regressão Logística com Step Wise
+# Treinando o modelo
+set.seed(314)
+arquivo <- '../model/model-Market-RL-StepAIC.rds'
+if (file.exists(arquivo)) {
+  mod_market_rlSW <- readRDS(file = arquivo)
+} else {
+  # Ajustando o processamento paralelo em CORES (NÚCLEOS)
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+  
+  cv <- trainControl(method = "cv", number = 10, savePredictions = TRUE,
+                     summaryFunction = twoClassSummary, classProbs = TRUE)
+  
+  system.time(mod_market_rlSW <- train(SUBSCRIBED ~ ., 
+                                       data = dt_market_train,
+                                       method = "glmStepAIC", 
+                                       metric = 'ROC',
+                                       trControl = cv))
+  # Parando o processamento paralelo
+  stopCluster(cl)
+}
+plot(varImp_rlSW)
+
+pred_market_rlSW <- predict(mod_market_rlSW, newdata = dt_market_test, type = 'prob')
+cutoff <- optimalCutoff(actuals = as.integer(dt_market_test$SUBSCRIBED)-1, 
+                         predictedScores = pred_market_rlSW$yes)
+
+# Performance com Step Wise
+print(paste('AUC:',
+      AUC(pred_market_rlSW$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+      LogLoss(pred_market_rlSW$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_rlSW$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rlSW <- caret::confusionMatrix(data = pred_market, 
+                                          positive = 'yes', 
+                                          reference = dt_market_test$SUBSCRIBED,
+                                          mode = 'everything'))
+```
+  
+  Avaliando a performance do modelo, ele obteve um *AUC* de *93,69%* e um *LogLoss* de *0,2127598*, similares ao modelo sem *Step Wise*.
+  Otimizando a linha de corte, foi obtido *Acurácia* de *90,86%*, uma *Sensibilidade* de *56,33%*, uma *Especificidade* de *95,50%* e uma *Precisão* de *62,72%*.
+  Como métrica balizadora de performance, o valor do *F1 Score* para esse modelo foi de *59,35%*. Apesar de ligeiramente menor que o modelo sem *Step Wise*, o modelo com *Step Wise* gerou uma *Precisão* melhor e é um modelo mais parcimonioso que o modelo com todas as variáveis. Portanto, a preferência será pelo modelo com *Step Wise*. 
+
+```{r fig.height=8}
+# ----- Regressão Logística com Genetic Algorithm
+# Treinando o modelo
+set.seed(314)
+arquivo <- '../model/model-Market-RL-GA.rds'
+if (file.exists(arquivo)) {
+  obj_rl_ga <- readRDS(file = arquivo)
+} else {
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+  
+  ga_ctrl <- gafsControl(functions = caretGA,
+                         genParallel = TRUE,
+                         allowParallel = TRUE,
+                         number = 5,
+                         method = "cv")
+  
+  obj_rl_ga <- gafs(x = dt_market_train[,-c('SUBSCRIBED','DEFAULT')],
+                    y = dt_market_train$SUBSCRIBED,
+                    iters = 3,
+                    popSize = 5,
+                    gafsControl = ga_ctrl,
+                    method = "glm")
+  
+  # Parando o processamento paralelo
+  stopCluster(cl)
+}
+mod_market_rlGA <- obj_rl_ga$fit
+varImp_rlGA <- varImp(mod_market_rlGA)
+plot(varImp_rlGA)
+
+# Avaliando a performance
+pred_market_rlGA <- predict(mod_market_rlGA, newdata = dt_market_test, type = 'prob')
+cutoff <- optimalCutoff(actuals = as.integer(dt_market_test$SUBSCRIBED)-1, 
+                         predictedScores = pred_market_rlGA$yes)
+
+# Performance com Genetic Algorithm
+print(paste('AUC:',
+            AUC(pred_market_rlGA$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss(pred_market_rlGA$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_rlGA$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rlGA <- caret::confusionMatrix(data = pred_market, 
+                                          positive = 'yes', 
+                                          reference = dt_market_test$SUBSCRIBED,
+                                          mode = 'everything'))
+```
+
+  Avaliando a performance do modelo usando *Genetic Algorithm*, ele obteve um *AUC* de *93,66%* e um *LogLoss* de *0,2130927*, similares aos demais modelos usando *Regressão Logística*.
+  Otimizando a linha de corte, foi obtido *Acurácia* de *90,81%*, uma *Sensibilidade* de *57,23%*, uma *Especificidade* de *95,32%* e uma *Precisão* de *62,16%*.
+  Como métrica balizadora de performance, o valor do *F1 Score* para esse modelo foi de *59,59%*. 
+
+
+#### Random Forest
+
+  O modelo seguinte a ser treinado será o *Random Forest*, utilizando o pacote **H2O**.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# ----- Random Forest
+# Treinando o modelo
+mod_market_rf <- h2o.randomForest(x = x, 
+                                  y = y,
+                                  training_frame = h2o_market_train,
+                                  nfolds = 10,
+                                  fold_assignment = 'Random',
+                                  ntrees = 200,
+                                  max_depth = 30,
+                                  binomial_double_trees = TRUE,
+                                  seed = 314)
+h2o.varimp_plot(mod_market_rf)
+```
+
+  As três variáveis mais importantes do modelo, em ordem de importância, são a **DURATION** (Duração do Último Contato em segundos), a **AGE** (Idade) e o **JOB** (Profissão).
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+pred_market_rf <- h2o.predict(mod_market_rf, newdata = h2o_market_test)
+cutoff <- optimalCutoff(actuals = as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1, 
+                        predictedScores = (as.data.frame(pred_market_rf))$yes)
+print(paste('AUC:',
+            AUC((as.data.frame(pred_market_rf))$yes,
+                as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss((as.data.frame(pred_market_rf))$yes,
+                    as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_rf$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rf <- caret::confusionMatrix(data = (as.data.frame(pred_market))$C1, 
+                                        positive = 'yes',
+                                        reference = (as.data.frame(h2o_market_test))$SUBSCRIBED,
+                                        mode = 'everything'))
+```
+
+  Avaliando a performance do modelo, foi obtido um *AUC* de *94,17%* e um *LogLoss* de *0,1871988*. Otimizando a linha de corte, foi obtido *Acurácia* de *91,09%*, uma *Sensibilidade* de *61,12%*, uma *Especificidade* de *95,12%* e uma *Precisão* de *62,72%*. 
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *61,91%*.
+  
+   Na busca de um aprimoramento no modelo de *Random Forest*, availou-se o modelo com os métodos de *feature selection*: *Genetic Algorithm (GA)* e *Recursive Feature Elimination (RFE)*.
+  
+```{r eval=FALSE}
+# ----- Random Forest com Genetic Algorithm
+# Treinando o modelo
+set.seed(314)
+arquivo <- '../model/model-Market-RF-GA.rds'
+if (file.exists(arquivo)) {
+  obj_rf_ga <- readRDS(file = arquivo)
+} else {
+  # Ajustando o processamento paralelo em CORES (NÚCLEOS)
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+  
+  ga_ctrl <- gafsControl(functions = rfGA,
+                         genParallel = TRUE,
+                         allowParallel = TRUE,
+                         number = 5,
+                         method = "cv")
+  
+  obj_rf_ga <- gafs(x = dt_market_train[,-c('SUBSCRIBED')],
+                    y = dt_market_train$SUBSCRIBED,
+                    iters = 3,
+                    popSize = 10,
+                    gafsControl = ga_ctrl)
+  
+  # Parando o processamento paralelo
+  stopCluster(cl)
+}
+mod_market_rfGA <- obj_rf_ga$fit
+plot(varImp_rfGA)
+
+# Avaliando a performance
+pred_market_rfGA <- predict(mod_market_rfGA, newdata = dt_market_test, type = 'prob')
+cutoff <- optimalCutoff(actuals = as.integer(dt_market_test$SUBSCRIBED)-1, 
+                         predictedScores = (as.data.frame(pred_market_rfGA))$yes)
+
+# Performance com Genetic Algorithm
+print(paste('AUC:',
+            AUC((as.data.frame(pred_market_rfGA))$yes, 
+                as.integer(dt_market_test$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss((as.data.frame(pred_market_rfGA))$yes,
+                    as.integer(dt_market_test$SUBSCRIBED)-1)))
+
+pred_market <- ifelse((as.data.frame(pred_market_rfGA))$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rfGA <- caret::confusionMatrix(data = pred_market, 
+                                          positive = 'yes', 
+                                          reference = dt_market_test$SUBSCRIBED,
+                                          mode = 'everything'))
+```
+  
+   Avaliando a performance do modelo usando *Genetic Algorithm*, foi obtido um *AUC* de *94,29%* e um *LogLoss* de *0,192436*. Otimizando a linha de corte, foi obtido *Acurácia* de *91,11%*, uma *Sensibilidade* de *60,00%*, uma *Especificidade* de *95,29%* e uma *Precisão* de *63,12%*. 
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *61,52%*.
+
+  
+```{r eval=FALSE}
+# ----- Random Forest com Recursive Feature Elimination 
+# Treinando o modelo
+set.seed(314)
+arquivo <- '../model/model-Market-RF-RFE.rds'
+if (file.exists(arquivo)) {
+  obj_rf_rfe <- readRDS(file = arquivo)
+} else {
+  # Ajustando o processamento paralelo em CORES (NÚCLEOS)
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+  
+  subsets <- c(1:5,10,15,ncol(dt_market_train)-1)
+  fStats <- function(...) c(twoClassSummary(...),
+                            defaultSummary(...))
+  rfFuncs_new <- rfFuncs
+  rfFuncs_new$summary <- fStats
+  rfe_ctrl <- rfeControl(functions = rfFuncs_new,
+                         allowParallel = TRUE,
+                         number = 10,
+                         method = "cv")
+  
+  obj_rf_rfe <- rfe(x = dt_market_train[,-c('SUBSCRIBED')],
+                    y = dt_market_train$SUBSCRIBED,
+                    sizes = subsets,
+                    metric = 'ROC',
+                    rfeControl = rfe_ctrl,
+                    ntree = 200)
+  
+  # Parando o processamento paralelo
+  stopCluster(cl)
+}
+mod_market_rfRFE <- obj_rf_rfe$fit
+plot(varImp_rfRFE)
+
+# Avaliando a performance
+pred_market_rfRFE <- predict(mod_market_rfRFE, newdata = dt_market_test, type = 'prob')
+cutoff <- optimalCutoff(actuals = as.integer(dt_market_test$SUBSCRIBED)-1, 
+                         predictedScores = (as.data.frame(pred_market_rfRFE))$yes)
+
+# Performance com Recursive Feature Elimination
+print(paste('AUC:',
+            AUC((as.data.frame(pred_market_rfRFE))$yes, 
+                as.integer(dt_market_test$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss((as.data.frame(pred_market_rfRFE))$yes,
+                    as.integer(dt_market_test$SUBSCRIBED)-1)))
+
+pred_market <- ifelse((as.data.frame(pred_market_rfRFE))$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rfRFE <- caret::confusionMatrix(data = pred_market, 
+                                          positive = 'yes', 
+                                          reference = dt_market_test$SUBSCRIBED,
+                                          mode = 'everything'))
+```
+  
+  Avaliando a performance do modelo usando *Recursive Feature Elimination*, foi obtido um *AUC* de *94,43%* e um *LogLoss* de *0,1976715*. Otimizando a linha de corte, foi obtido *Acurácia* de *91,17%*, uma *Sensibilidade* de *61,72%*, uma *Especificidade* de *9513%* e uma *Precisão* de *63,00%*. 
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *62,35%*.
+
+  
+#### eXtreme Gradient Boosting
+
+  O modelo seguinte a ser treinado será o *eXtreme Gradient Boosting*, utilizando o pacote **H2O**. 
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# ----- eXtreme Gradient Boosting
+# Treinando o modelo
+mod_market_xgb <- h2o.xgboost(x = x, 
+                              y = y,
+                              training_frame = h2o_market_train,
+                              nfolds = 10,
+                              fold_assignment = 'Random',
+                              ntrees = 60,
+                              max_depth = 7,
+                              booster = 'dart',
+                              stopping_rounds = 2,
+                              stopping_metric = 'logloss',
+                              stopping_tolerance = 0.01,
+                              seed = 314)
+h2o.varimp_plot(mod_market_xgb)
+```
+
+  As três variáveis mais importantes do modelo, em ordem de impotância, são a **DURATION** (Duração do Último Contato em segundos), similar ao obtido pelo modelo de *Random Forest*,  **EMP_VAR_RATE** (Taxa de Desemprego da Região) e **PDAYS** (Número de Dias desde Último Contato).
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+pred_market_xgb <- h2o.predict(mod_market_xgb, newdata = h2o_market_test)
+cutoff <- optimalCutoff(actuals = as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1, 
+                        predictedScores = (as.data.frame(pred_market_xgb))$yes)
+
+print(paste('AUC:',
+            AUC((as.data.frame(pred_market_xgb))$yes,
+                as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss((as.data.frame(pred_market_xgb))$yes,
+                    as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_xgb$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_xgb <- caret::confusionMatrix(data = (as.data.frame(pred_market))$C1, 
+                                         positive = 'yes', 
+                                         reference = (as.data.frame(h2o_market_test))$SUBSCRIBED,
+                                         mode = 'everything'))
+```
+
+  Avaliando a performance do modelo, foi obtido um *AUC* de *94,50%* e um *LogLoss* de *0,1859924*. Otimizando a linha de corte, foi obtido *Acurácia* de *91,18%*, uma *Sensibilidade* de *61,80%*, uma *Especificidade* de *95,13%* e uma *Precisão* de *63,03%*.
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *62,41%*. 
+  
+
+#### Support Vector Machine (LINEAR)
+
+  O modelo seguinte a ser treinado será o *Support Vector Machine (LINEAR)*, utilizando o pacote **CARET**.
+  
+```{r}
+# ----- Support Vector Machine (LINEAR)
+# Treinando o modelo
+set.seed(314)
+arquivo <- '../model/model-Market-SVM-Linear.rds'
+if (file.exists(arquivo)) {
+  mod_market_svmLin <- readRDS(file = arquivo)
+} else {
+  # Ajustando o processamento paralelo em 8 CORES (NÚCLEOS)
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+  
+  cv <- trainControl(method = "cv", number = 10, savePredictions = TRUE,
+                     summaryFunction = twoClassSummary, classProbs = TRUE)
+  
+  mod_market_svmLin <- train(SUBSCRIBED ~ ., 
+                             data = dt_market_train,
+                             method = "svmLinear", 
+                             metric = 'ROC',
+                             trControl = cv, 
+                             preProcess = c("center", "scale"))
+
+  # Parando o processamento paralelo
+  stopCluster(cl)
+}
+varImp_svmLin <- varImp(mod_market_svmLin)
+plot(varImp_svmLin)
+```
+  
+  As três mais importantes variáveis do modelo, em ordem de importância, são **DURATION** (Duração do Último Contato em segundos), **EMP_VAR_RATE** (Taxa de Desemprego da Região) e **CONTACT** (Tipo de Contato).
+  
+```{r}
+pred_market_svmLin <- predict(mod_market_svmLin, newdata = dt_market_test, type = 'prob')
+cutoff <- optimalCutoff(actuals = as.integer(dt_market_test$SUBSCRIBED)-1, 
+                        predictedScores = pred_market_svmLin$yes)
+
+print(paste('AUC:',
+            AUC(pred_market_svmLin$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss(pred_market_svmLin$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_svmLin$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_svmLin <- caret::confusionMatrix(data = pred_market, 
+                                            positive = 'yes', 
+                                            reference = dt_market_test$SUBSCRIBED,
+                                            mode = 'everything'))
+```
+  
+  Avaliando a performance do modelo, foi obtido um *AUC* de *93,65%* e um *LogLoss* de *0,2250672*. Otimizando a linha de corte, foi obtido *Acurácia* de *90,61%*, uma *Sensibilidade* de *57,15%*, uma *Especificidade* de *95,11%* e uma *Precisão* de *61,09%*.
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *59,06%*.
+  
+  
+#### Support Vector Machine (RADIAL)
+
+  O modelo seguinte a ser treinado será o *Support Vector Machine (RADIAL)*, utilizando o pacote **CARET**.
+  
+```{r}
+# ----- Support Vector Machine (RADIAL)
+# Treinando o modelo
+set.seed(314)
+arquivo <- '../model/model-Market-SVM-Radial.rds'
+if (file.exists(arquivo)) {
+  mod_market_svmRad <- readRDS(file = arquivo)
+} else {
+  # Ajustando o processamento paralelo em 8 CORES (NÚCLEOS)
+  cl <- makePSOCKcluster(cores)
+  registerDoParallel(cl)
+  
+  cv <- trainControl(method = "cv", number = 10, savePredictions = TRUE,
+                     summaryFunction = twoClassSummary, classProbs = TRUE)
+  
+  mod_market_svmRad <- train(SUBSCRIBED ~ ., 
+                             data = dt_market_train,
+                             method = "svmRadial", 
+                             metric = 'ROC',
+                             trControl = cv, 
+                             preProcess = c("center", "scale"))
+  
+  # Parando o processamento paralelo
+  stopCluster(cl)
+}
+varImp_svmRad <- varImp(mod_market_svmRad)
+plot(varImp_svmRad)
+```
+  
+  As três mais importantes variáveis do modelo, em ordem de importância, são **DURATION** (Duração do Último Contato em segundos), **EMP_VAR_RATE** (Taxa de Desemprego da Região) e **CONTACT** (Tipo de Contato), similar ao modelo *Support Vector Machine (LINEAR)*.
+  
+```{r}
+pred_market_svmRad <- predict(mod_market_svmRad, newdata = dt_market_test, type = 'prob')
+cutoff <- optimalCutoff(actuals = as.integer(dt_market_test$SUBSCRIBED)-1, 
+                        predictedScores = pred_market_svmRad$yes)
+
+print(paste('AUC:',
+            AUC(pred_market_svmRad$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss(pred_market_svmRad$yes, as.integer(dt_market_test$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_svmRad$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_svmRad <- caret::confusionMatrix(data = pred_market, 
+                                            positive = 'yes', 
+                                            reference = dt_market_test$SUBSCRIBED,
+                                            mode = 'everything'))
+```
+  
+  Avaliando a performance do modelo, foi obtido um *AUC* de *93,49%* e um *LogLoss* de *0,2236074*. Otimizando a linha de corte, foi obtido *Acurácia* de *90,59%*, uma *Sensibilidade* de *51,09%*, uma *Especificidade* de *95,89%* e uma *Precisão* de *62,57%*.
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *56,25%*.
+
+
+#### Rede Neural
+
+  O modelo seguinte a ser treinado será o de *Rede Neural*, utilizando o pacote **CARET**.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# ----- Redes Neurais
+# Treinando o modelo
+mod_market_rn <- h2o.deeplearning(x = x, 
+                                  y = y,
+                                  training_frame = h2o_market_train,
+                                  hidden = c(128,128,128),
+                                  epochs = 10,
+                                  activation = "Tanh",
+                                  stopping_metric = 'logloss',
+                                  stopping_tolerance = 1e-2,
+                                  stopping_rounds = 2,
+                                  adaptive_rate = FALSE,
+                                  rate = 0.01,
+                                  rate_annealing = 2e-6,
+                                  momentum_start = 0.2,
+                                  momentum_stable = 0.4,
+                                  momentum_ramp = 1e7,
+                                  l1 = 1e-5,
+                                  l2 = 1e-5,
+                                  max_w2 = 10,
+                                  reproducible = TRUE,
+                                  seed = 314)
+h2o.varimp_plot(mod_market_rn)
+```
+
+  As três variáveis mais importantes do modelo, em ordem de importância, são **DURATION** (Duração do Último Contato em segundos), **EMP_VAR_RATE** (Taxa de Desemprego da Região) e **MONTH.oct**, variável binária para a variável **MONTH** (Último Mês de Contato) para o mês de OUTUBRO.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+pred_market_rn <- h2o.predict(mod_market_rn, newdata = h2o_market_test)
+cutoff <- optimalCutoff(actuals = as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1, 
+                        predictedScores = (as.data.frame(pred_market_rn))$yes)
+
+print(paste('AUC:',
+            AUC((as.data.frame(pred_market_rn))$yes,
+                as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+print(paste('LogLoss:',
+            LogLoss((as.data.frame(pred_market_rn))$yes,
+                    as.integer((as.data.frame(h2o_market_test))$SUBSCRIBED)-1)))
+
+pred_market <- ifelse(pred_market_rn$yes > cutoff, 'yes', 'no')
+pred_market <- as.factor(pred_market)
+(mc_market_rn <- caret::confusionMatrix(data = (as.data.frame(pred_market))$C1, 
+                                        positive = 'yes', 
+                                        reference = (as.data.frame(h2o_market_test))$SUBSCRIBED,
+                                        mode = 'everything'))
+```
+
+  Avaliando a performance do modelo, foi obtido um *AUC* de *94,59%* e um *LogLoss* de *0,183795*. Otimizando a linha de corte, foi obtido *Acurácia* de *91,17%*, uma *Sensibilidade* de *66,29%*, uma *Especificidade* de *94,51%* e uma *Precisão* foi de *61,89%*.
+  Como métrica balizadora de performance, o *F1 Score* para esse modelo foi de *64,01%*.
+  
+  
+### Modelagem para o *Data Set* de Faturamento das Lojas.
+
+
+#### Regressão Linear
+
+  O primeiro modelo que será treinado é o de *Regressão Linear*.
+
+```{r}
+# Treinando o modelo
+set.seed(314)
+
+mod_retail_rl <- lm(Weekly_Sales ~ ., 
+                    data = dt_retail_train[,-c('Store')])
+summary(mod_retail_rl)
+```
+
+  A princípio, foi obtido um modelo sem a variável ID da Loja. O resultado obtido foi um *R2* muito baixo e um *RSE* demasiadamente alto.
+  Optou-se em colocar a variável **Store** no treinamento do modelo, com o argumento que seria uma variável da loja que não seria alterada no decorrer da vida útil da mesma e a identificaria univocamente. Consequentemente, a região em que a loja estaria instalada seria relacionada no modelo por conta disso. Isso traria para o modelo a posição geográfica em que elas atuariam, levando para a modelagem informações que não estariam disponíveis no *Data Set* explicitamente.
+  Isso poderia enriquecer o modelo com mais informações, trazendo informação geográfica que estaria relacionado ao nível de renda da população da região. 
+
+```{r}
+mod_retail_rl <- lm(Weekly_Sales ~ ., 
+                    data = dt_retail_train)
+summary(mod_retail_rl)
+```
+
+  Buscando uma melhora no modelo, optou-se por retirar os outliers, pois o *Data Set* é relativamente grande, não trazendo maiores prejuízos para o treinamento. Foi considerado outiliers os pontos do modelo que tenham a distância de Cook maior que $\frac{4}{nr.\ de\ observações}$.
+  
+```{r}
+outliers <- cooks.distance(mod_retail_rl) > 4/nrow(dt_retail_train)
+mod_retail_rl <- lm(Weekly_Sales ~ .,
+                    data = dt_retail_train[!which(outliers),])
+summary(mod_retail_rl)
+```
+  
+  Houve uma melhora significativa do modelo, o *R2* passou para 0,435 e o *RSE* 337.300.
+  
+```{r}
+mod_retail_rl <- lm(Weekly_Sales ~ ., 
+                    data = dt_retail_train[!which(outliers),-c('MarkDown4','Fuel_Price')])
+summary(mod_retail_rl)
+dt <- dt_retail_train[!which(outliers),-c('MarkDown4','Fuel_Price')]
+```
+  
+  Como resultado final, foi obtido um modelo com todas as variáveis presentes significantes, pois o *p-valor* dos coeficientes delas passaram no teste t. Assim como todo o modelo de acordo com o teste F que obteve um *p-valor* igual a *2,2e-16*, apesar do *R2* baixo de *0,435* e um *RSE* alto de *337.200*.
+  
+  Verificando a contribuição das variáveis no modelo.
+
+```{r}
+varImp_rl <- caret::varImp(mod_retail_rl, useModel = TRUE, scale = TRUE)
+Imp_rl <- data.table()
+Imp_rl[,':='(Variable = rownames(varImp_rl),
+             Importance = varImp_rl$Overall)]
+setorder(Imp_rl, Importance)
+Imp_rl$Variable <- factor(Imp_rl$Variable, levels = Imp_rl$Variable)
+as.data.frame(Imp_rl) %>% ggplot(aes(y = Importance, x = Variable)) +
+  geom_col(aes(fill = as.factor(Variable)), width = 0.2, show.legend = FALSE) +
+  scale_fill_brewer(direction = 1, palette = 8,  type = 'div') +
+  scale_y_continuous(limits = c(0,35), breaks = seq(1,35,2)) +
+  labs(y = 'Grau de Importância', x = "Variável", 
+       title = "Escala de Importância das Variáveis") +
+  coord_flip()
+```
+
+  As três variáveis mais importantes do modelo, em ordem de importância, são **Store** (ID da Loja), **MarkDown1** e **MarkDown5** (Redução de Preço).
+  
+  Verificando a existência de Multicolinearidade no modelo.
+
+```{r}
+corrplot(cor(dt[,-c('Date','IsHoliday')]),
+         method = 'square',
+         type = 'upper',
+         diag = FALSE,
+         title = 'Correlação',
+         mar = c(1,1,1,1),
+         addCoefasPercent = TRUE,
+         addCoef.col = 'gray50',
+         number.digits = 0)
+
+# VIF (Variance Inflation Factor)
+vif(mod_retail_rl)
+```
+
+  Graficamente não há índicios de alta correlação entre as variáveis dependentes (>70%). 
+  
+  Avaliando através do teste estatístico VIF (Variance Inflation Factor), utilizou-se a regra prática se o valor do VIF for maior que 10, existe forte multicolinearidade entre as variáveis indenpendentes.
+  Como o teste não apontou a existência de multicolinearidade, o modelo atende ao pressuposto de ausência de multicolinearidade entre as variáveis independentes.
+
+  Verificando o pressuposto de normalidade dos resíduos.
+  
+```{r}
+residuo <- rstandard(mod_retail_rl)
+
+# Avaliando graficamente
+ggplot() +
+  geom_qq(aes(sample = residuo), color = 'blue') +
+  geom_qq_line(aes(sample = residuo), color = 'red') +
+  labs(x = "Quantidades Teóricas", y = "Resíduos Padronizados")
+
+# Avaliando a normalidade dos resíduos através do teste formal de Anderson-Darling
+ad.test(residuo)
+```
+  
+  Com exceção dos primeiros e últimos pontos que representam um descolamento da reta, o gráfico sugere que os resíduos são distribuídos normalmente.
+  Utilizando um teste formal para a avaliação, constatou-se que os resíduos não possuem distribuição normal. O teste utilizado foi o de Anderson-Darling, que gerou um *p-valor* menor que 5%, portanto rejeitou-se a hipótese nula de existência de normalidade.
+  
+  Na tentativa de buscar uma normalidade dos resíduos, foi aplicado uma transformação nas variáveis independentes, que no caso foi utilizado a função logarítmica..
+  
+```{r}
+mod_retail_rl2 <- lm(Weekly_Sales ~ log(Store) + log(MarkDown1) + 
+                       log(MarkDown5) + log(CPI) +
+                       log(Temperature) + log(Unemployment) + 1,
+                     data = dt)
+summary(mod_retail_rl2)
+
+residuo2 <- rstandard(mod_retail_rl2)
+ggplot() +
+  geom_qq(aes(sample = residuo2), color = 'blue') +
+  geom_qq_line(aes(sample = residuo2), color = 'red') +
+  labs(x = "Quantidades Teóricas", y = "Resíduos Padronizados")
+ad.test(residuo2)
+```
+  
+  O resultado foi um modelo com *R2* mais baixo e *RSE* mais alto.
+  
+  Avalidando graficamente, os resíduos parecem estar distribuídos normalmente com exceção das extremidades, mas formalmente o teste ainda acusa a falta de normalidade. O *p-valor* é menor que 5%, rejeitando a hipótese de normalidade.
+  
+  Apesar do pressuposto de normalidade dos resíduos comprometer a qualidade do modelo obtido, prosseguiremos com sua avaliação no demais pressupostos.
+  
+  Verificando a existência de auto correlação serial.
+  
+```{r}
+# Teste de Durbin-Watson para modelo sem transformação
+dwtest(mod_retail_rl, alternative = 'two.sided')
+
+# Teste de Durbin-Watson para modelo com transformação LOG
+dwtest(mod_retail_rl2, alternative = 'two.sided')
+```
+  
+  Avaliando através do teste formal de Durbin-Watson, percebe-se um *p-valor* menor que 5%. Com isso rejeita-se a hipótese nula de ausência de correlação serial nos dois modelos.
+  Portanto, há indícios de correlação serial nos dois modelos, quebrando mais um pressuposto da *Regressão Linear*.
+  
+  Verficando a existêcia de homocedasticidade.
+  
+```{r}
+g1 <- ggplot() +
+  geom_point(aes(x = fitted.values(mod_retail_rl), y = residuo), color = 'cyan4') +
+  geom_hline(yintercept = 0, color = 'salmon3') +
+  labs(x = "Satisfação Ajustado", y = 'Resíduos Padronizados', 
+       title = "Modelo sem transformação")
+g2 <- ggplot() +
+  geom_point(aes(x = fitted.values(mod_retail_rl2), y = residuo), color = 'cyan4') +
+  geom_hline(yintercept = 0, color = 'salmon3') +
+  labs(x = "Satisfação Ajustado", y = 'Resíduos Padronizados', 
+       title = "Modelo com transformação de LOG")
+grid.arrange(g1, g2,
+             ncol = 2, nrow = 1)
+
+# Teste de Breusch-Pagan para modelo sem transformação
+bptest(mod_retail_rl)
+
+# Teste de Breusch-Pagan para modelo sem transformação
+bptest(mod_retail_rl2)
+```
+  
+  Graficamente os pontos parecem apresentar um padrão nos dois modelos, como a forma de um losango por exemplo, que sugere uma possível heterocedasticidade.
+  
+  Verificando formalmente através do teste de Breusch-Pagan, constata-se um *p-valor* menor que 5% nos dois modelos, rejeitando a hipótese nula de que a variância dos resíduos é constante, e consequentemente a variância da variável dependente não é constante. Portanto, existe heterocedasticidade nos dois modelos, quebrando esse pressuposto.
+  
+  Como o teste de vários pressupostos falharam para os dois modelos, eles não serão utilizado para previsão do Faturamento das Lojas. Acrescenta-se o baixo nivel do *R2* obtido, menor que 60% nos dois modelos.
+  
+  Seguiremos com a avaliaçaõ de perfomance do modelo para fins didáticos. Optou-se por utilizar o modelo sem trasnformação, pois possui um *R2* melhor.
+  
+```{r}
+pred_retail_rl <- predict(mod_retail_rl, newdata = dt_retail_test)
+R2_Score(y_pred = pred_retail_rl, y_true = dt_retail_test$Weekly_Sales)
+RMSE(y_pred = pred_retail_rl, y_true = dt_retail_test$Weekly_Sales)
+```
+  
+  O modelo gerado obteve um *R2* de 0,1728 e um *RMSE* de 506.072,8.
+
+
+#### Random Forest
+  
+  O modelo seguinte a ser treinado será o *Random Forest* para regressão, utilizando o pacote **CARET**.
+  
+```{r}
+# Ajustando o processamento paralelo em CORES (NÚCLEOS)
+cl <- makePSOCKcluster(cores)
+registerDoParallel(cl)
+
+# Treinando o modelo
+set.seed(314)
+cv <- trainControl(method = "cv", number = 10, savePredictions = TRUE,
+                   summaryFunction = defaultSummary)
+
+mod_retail_rf <- train(Weekly_Sales ~ ., 
+                       data = dt_retail_train,
+                       method = "rf", 
+                       metric = 'RMSE',
+                       trControl = cv,
+                       tuneLength = 5)
+
+# Parando o processamento paralelo
+stopCluster(cl)
+
+varImp_rf <- varImp(mod_retail_rf)
+plot(varImp_rf)
+```
+  
+  As três variáveis mais importantes do modelo, em ordem de importância, são **Store** (ID da Loja), **CPI** (Consumer Price Index - Inflação) e **Unemployment** (Taxa de Desemprego).
+  
+```{r}
+pred_retail_rf <- predict(mod_retail_rf, newdata = dt_retail_test)
+R2_Score(y_pred = pred_retail_rf, y_true = dt_retail_test$Weekly_Sales)
+RMSE(y_pred = pred_retail_rf, y_true = dt_retail_test$Weekly_Sales)
+```
+  
+  O modelo gerado obteve um *R2* de *0,9417* e um *RMSE* de *135.551,6*, bem superior ao modelo de *Regressão Linear*.
+
+
+#### Rede Neural
+
+  O modelo seguinre a ser treinado é o de *Rede Neural*, utilizando o pacote **H2O**.
+  
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Definindo a variável target
+y <- "Weekly_Sales"
+x <- setdiff(names(dt_retail_train), y)
+h2o_retail_train <- as.h2o(dt_retail_train)
+h2o_retail_test <- as.h2o(dt_retail_test)
+
+# Treinando o modelo
+mod_retail_rn <- h2o.deeplearning(x = x, 
+                                  y = y,
+                                  training_frame = h2o_retail_train,
+                                  hidden = c(256,256,256,256,256),
+                                  epochs = 30,
+                                  activation = 'Rectifier',
+                                  stopping_metric = 'RMSE',
+                                  stopping_tolerance = 1e-5,
+                                  stopping_rounds = 5,
+                                  l1 = 1e-5,
+                                  l2 = 1e-5,
+                                  max_w2 = 10,
+                                  reproducible = TRUE,
+                                  seed = 314)
+h2o.varimp_plot(mod_retail_rn)
+```
+  
+  As três variáveis mais importantes do modelo, em ordem de importância, são **Store** (ID da Loja), **Unemployment** (Taxa de Desemprego) e **CPI** (Consumer Price Index - Inflação).
+  
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+pred_retail_rn <- h2o.predict(mod_retail_rn, newdata = h2o_retail_test)
+(perf_retail_rn <- h2o.performance(mod_retail_rn, h2o_retail_test))
+perf_retail_rn@metrics$r2
+```
+  
+  O modelo gerado obteve um *R2* de *0,8397* e um *RMSE* de *222.770,7*, bem superior ao modelo de *Regressão Linear*, mas inferior ao modelo de *Random Forest*.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Desconectando e desligando o pacote H2O.
+h2o.shutdown(prompt = FALSE)
+```
+
+
+### Conclusão
+
+#### Marketing
+  
+  Fazendo uma avaliação da performance dos modelos de classificação para o *Data Set* de **Marketing**, verifica-se na tabela abaixo o desempenho de acordo com as métricas: *LogLoss*, *AUC*, *Precisão* e *F1 Score*.
+  
+**Avaliação da Performance dos modelos de Classificação para Marketing:**
+
+Modelo    | LogLoss | AUC | Precisão | F1 Score
+:----------------------- | :---------: | :------: | :------: | :------:
+Regressão Logística | 0,2123981 | 93,71% | 61,99% | 60,39%  
+Regressão Logística com StepWise | 0,2127598 | 93,69% | 62,72% | 59,35%
+Regressão Logística com GA | 0,2130927 | 93,66% | 62,16% | 59,59%
+Random Forest | 0,1871988 | 94,17% | 62,72% | 61,39%
+Random Forest com GA | 0,192436 | 94,29% | 63,12% | 61,52%
+Random Forest com RFE | 0,1976715 | 94,43% | 63,00% | 62,35%
+eXtreme Gradient Boosting | 0,1859924 | 94,50% | 63,03% | 62,41%
+SVM Linear | 0,2250672 | 93,65% | 61,09% | 59,06%
+SVM Radial | 0,2236074 | 93,49% | 62,57% | 56,25%
+Rede Neural | 0,1837795 | 94,59% |61,89% | 64,01%
+  
+  Os melhores modelos de acordo com a métrica *F1 Score* foram: *Regressão Logística*, *Random Fores*, *eXtreme Gradient Boosting* e *Rede Neural*.
+  
+  O modelo de *Regressão Logśitica*, apesar de um *LogLoss* de *0,212391*, que mostra um erro na capacidade de identificar um cliente que irá contratar o plano de um que não, semelhante aos demais modelos medianos (modelos com *LogLoss* maior que 0,2), apresenta capacidade de acertar os clientes que convertem, evidenciado por sua *Precisão* no valor de *61,99%*.
+  
+  *Random Forest* possui um *LogLoss* muito bom, superior a maioria dos modelos, acrescido de um *F1 Score* maior que 60%. Além disso, utilizando processo de *feature selection* houve uma melhora na previsão do modelo, atingindo *F1 Score* de *62,41%* com RFE (Recursive Feature Elimination).
+  
+  O modelo de *eXtreme Gradient Boosting* possui um *LogLoss* que é o segundo melhor dentre os modelos treinados, perdendo somente para o modelo de *Rede Neural* e também possui um *F1 Score* maior que *60%*. Mas notou-se que o tempo gasto no treinamento desse modelo foi maior que no modelo de *Random Forest*.
+  
+  *Rede Neural* possui o melhor *LogLoss* dentre os modelos treinados e um *F1 Score* mais alto. Seu ponto de preocupação foi o tempo necessário no treinamento do modelo, que foi bem superior aos demais.
+  
+  Dentre os melhores modelos, a escolha foi pelo modelo de *Random Forest*, pois possui métricas muito boas em comparação com os melhores modelos e um tempo de treinamento abaixo dos demais, com exceção do modelo de *Regressão Logística* que possui o menor tempo de treinamento dentre os modelos.
+
+  
+#### Faturamento das Lojas
+  
+
+  Fazendo uma avaliação da performance dos modelos de regressão para o *Data Set* de **Faturamento das Lojas**, verifica-se na tabela abaixo o desempenho de acordo com as métricas: *R2* e *RMSE*.
+  
+**Avaliação da Performance dos modelos de Regressão para o Faturamento das Lojas:**
+
+Modelo    | R2 | RMSE
+:----------------------- | :---------: | :--------:
+Regressão Linear | 17,28% | 506.072,8  
+Random Forest | 96,17% | 135.551,6
+Rede Neural | 83,97% | 222.770,7
+  
+  Os melhores modelos de acordo com a métrica *F1 Score* foram: *Regressão Logística*, *Random Fores*, *eXtreme Gradient Boosting* e *Rede Neural*.
+
+  Os melhores modelos de acordo com a métrica *R2* foram: *Random Forest* e *Rede Neural*.
+  
+  O modelo de *Random Forest* utilizado para regressão funcionou com boa performance, gerando um alto *R2* com baixo erro medido através do *RMSE*, em comparação com os demais modelos.
+  
+  *Rede Neural* também gerou um bom modelo com um valor de *R2* acima dos 80%. Mas em relação ao custo de treinamento, foi superior ao *Random Forest*.
+  
+  A escolha pelo modelo que será utilizado na previsão do faturamento das lojas recairá novamente no modelo de *Random Forest*. Possui o maior *R2* e menor *RMSE* dentre os modelos testados, aliadado ao fato de ser um modelo com mais baixo tempo de treinamento em comparação com o de *Rede Neural*.
